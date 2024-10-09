@@ -1,0 +1,54 @@
+import networkx as nx
+
+def FuseTranspose(opt):
+    G = opt.G
+    tensorDict = opt.TensorDict
+
+    # List the nodes in topological order
+    layers = list(nx.topological_sort(G))
+
+    # Process each layer
+    for layer in layers:
+        if layer in G.nodes:
+            node_data = G.nodes[layer]
+            
+            # Look for nodes that need to be replaced (Unsqueeze nodes)
+            if node_data.get("op_type", None) != "Unsqueeze":
+                continue
+            
+            # Get the successors of the Unsqueeze node (which would be Concat or other nodes in the original flow)
+            succs = list(G.successors(layer))
+            
+            # Get the original input shape (the input before the Unsqueeze)
+            input_node = node_data['input'][0]
+            input_shape = tensorDict[input_node].shape
+
+            # Remove the Unsqueeze and related nodes, replace with Transpose
+            transpose_node_name = "Transpose_" + layer
+
+            # Define transpose axes based on the desired transposition logic
+            # Example: if you're swapping the first two dimensions, axes = (1, 0, 2)
+            transpose_axes = (1, 0, 2)  # Change according to your actual transposition logic
+            
+            # Add a new Transpose node
+            G.add_node(transpose_node_name, op_type="Transpose", attr_dict={"perm": transpose_axes}, input=[input_node])
+            G.add_edge(input_node, transpose_node_name)
+
+            # Ensure that we correctly propagate the outputs of the Transpose node to replace the Gather nodes
+            for succ in succs:
+                if G.nodes[succ].get("op_type", None) == "Gather":
+                    # Connect the output of the Transpose to the input of the Gather node successors
+                    gather_succs = list(G.successors(succ))
+                    for gather_succ in gather_succs:
+                        G.add_edge(transpose_node_name, gather_succ)
+                    # Remove the original Gather node
+                    G.remove_node(succ)
+
+            # Remove the original Unsqueeze and Concat nodes
+            G.remove_node(layer)
+
+            # Log the replacement
+            logger.debug(f"Replaced Unsqueeze and related operations with Transpose node {transpose_node_name}.")
+
+            # Update the optimization pass counter
+            opt.passes_counter["FuseTranspose"] += 1
