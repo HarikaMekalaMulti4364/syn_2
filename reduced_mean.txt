@@ -1,0 +1,54 @@
+import networkx as nx
+import numpy as np
+
+from nnac.core.log import Logger
+from .single_layer_transforms import remove_one_layer
+
+logger = Logger("OPTIMIZATION")
+
+"""
+Identify ReduceMean, remove it, and replace it with a manually computed mean as input to the next node.
+"""
+
+def RemoveReduceMeanAndReplace(opt):
+    G = opt.G
+    tensorDict = opt.TensorDict
+
+    layers = list(nx.topological_sort(G))  # Topologically sort the graph
+    for layer in layers:
+        if layer in G.nodes:  # Ensure the node still exists
+            if G.nodes[layer].get("op_type", None) != "ReduceMean":
+                continue
+
+            # Get the input of ReduceMean and axes
+            reducemean_input = G.nodes[layer]["input"][0]
+            axes = G.nodes[layer]["attr_dict"].get("axes", None)
+            
+            # Check if the input tensor is available
+            input_tensor = tensorDict.get(reducemean_input, None)
+            if input_tensor is None:
+                continue
+            
+            # Manually compute the mean based on the axes
+            mean_value = np.mean(input_tensor, axis=tuple(axes)) if axes else np.mean(input_tensor)
+
+            # Get successors of ReduceMean to redirect output
+            successors = list(G.successors(layer))
+            if not successors:
+                continue  # No successor nodes, nothing to replace
+
+            for succ in successors:
+                # Replace the input of the successor node (output of ReduceMean)
+                succ_inputs = G.nodes[succ]["input"]
+                idx = succ_inputs.index(layer)  # Find where ReduceMean output is used
+                succ_inputs[idx] = mean_value   # Replace it with the computed mean
+
+                # Update the successor node's inputs
+                G.nodes[succ]["input"] = succ_inputs
+
+            # Remove the ReduceMean node
+            remove_one_layer(opt, layer)
+            logger.debug(f"Removed ReduceMean node {layer} and replaced it with computed mean.")
+
+            # Increment the counter for this optimization pass
+            opt.passes_counter["RemoveReduceMeanAndReplace"] += 1
