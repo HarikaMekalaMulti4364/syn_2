@@ -1,0 +1,52 @@
+import onnx
+
+# Load the original ONNX model (opset 19)
+model = onnx.load("model_opset19.onnx")
+
+# Iterate over the nodes in the graph to find the ReduceMean node
+for node in model.graph.node:
+    if node.op_type == "ReduceMean":
+        # Find and extract the 'axes' attribute
+        for attr in node.attribute:
+            if attr.name == "axes":
+                # Append the axes name and value as an input
+                axes_name = "axes"  # or any unique name you prefer
+                
+                # Remove the attribute from the node
+                node.attribute[:] = [a for a in node.attribute if a.name != "axes"]
+                
+                # Add 'axes' as an input to the node (reusing the values directly)
+                node.input.append(axes_name)
+                
+                # Insert the constant values for 'axes' into the graph as input
+                axes_tensor = onnx.helper.make_tensor_value_info(
+                    name=axes_name,  # Use the same name for tensor
+                    elem_type=onnx.TensorProto.INT64,
+                    shape=[len(attr.ints)]  # Shape of the axes
+                )
+                
+                # Add tensor information to the model inputs
+                model.graph.input.append(axes_tensor)
+
+                # Insert the axes tensor into the graph as a constant node
+                axes_constant_node = onnx.helper.make_node(
+                    'Constant', 
+                    inputs=[], 
+                    outputs=[axes_name], 
+                    value=onnx.helper.make_tensor(
+                        name=axes_name,
+                        data_type=onnx.TensorProto.INT64,
+                        dims=[len(attr.ints)],  # Shape based on axes
+                        vals=attr.ints  # The actual axes values
+                    )
+                )
+
+                # Add this constant node to the graph
+                model.graph.node.append(axes_constant_node)
+                break
+
+# Update the opset version to 21
+model.opset_import[0].version = 21
+
+# Save the modified model to a new file
+onnx.save(model, "model_opset21.onnx")
